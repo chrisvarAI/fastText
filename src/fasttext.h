@@ -68,6 +68,8 @@ class FastText {
  public:
   FastText();
 
+  static std::exception_ptr classExceptionPtr;
+
   int32_t getWordId(const std::string& word) const;
 
   int32_t getSubwordId(const std::string& subword) const;

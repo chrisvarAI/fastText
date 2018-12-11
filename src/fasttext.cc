@@ -30,6 +30,8 @@ bool comparePairs(
 
 FastText::FastText() : quant_(false), wordVectors_(nullptr) {}
 
+std::exception_ptr FastText::classExceptionPtr = nullptr;
+
 void FastText::addInputVector(Vector& vec, int32_t ind) const {
   if (quant_) {
     vec.addRow(*qinput_, ind);
@@ -643,25 +645,33 @@ void FastText::trainThread(int32_t threadId) {
   const int64_t ntokens = dict_->ntokens();
   int64_t localTokenCount = 0;
   std::vector<int32_t> line, labels;
-  while (tokenCount_ < args_->epoch * ntokens) {
-    real progress = real(tokenCount_) / (args_->epoch * ntokens);
-    real lr = args_->lr * (1.0 - progress);
-    if (args_->model == model_name::sup) {
-      localTokenCount += dict_->getLine(ifs, line, labels);
-      supervised(model, lr, line, labels);
-    } else if (args_->model == model_name::cbow) {
-      localTokenCount += dict_->getLine(ifs, line, model.rng);
-      cbow(model, lr, line);
-    } else if (args_->model == model_name::sg) {
-      localTokenCount += dict_->getLine(ifs, line, model.rng);
-      skipgram(model, lr, line);
+  try {
+    while (tokenCount_ < args_->epoch * ntokens) {
+      if (classExceptionPtr) {
+        break;
+      }
+      real progress = real(tokenCount_) / (args_->epoch * ntokens);
+      real lr = args_->lr * (1.0 - progress);
+      if (args_->model == model_name::sup) {
+        localTokenCount += dict_->getLine(ifs, line, labels);
+        supervised(model, lr, line, labels);
+      } else if (args_->model == model_name::cbow) {
+        localTokenCount += dict_->getLine(ifs, line, model.rng);
+        cbow(model, lr, line);
+      } else if (args_->model == model_name::sg) {
+        localTokenCount += dict_->getLine(ifs, line, model.rng);
+        skipgram(model, lr, line);
+      }
+      if (localTokenCount > args_->lrUpdateRate) {
+        tokenCount_ += localTokenCount;
+        localTokenCount = 0;
+        if (threadId == 0 && args_->verbose > 1)
+          loss_ = model.getLoss();
+      }
     }
-    if (localTokenCount > args_->lrUpdateRate) {
-      tokenCount_ += localTokenCount;
-      localTokenCount = 0;
-      if (threadId == 0 && args_->verbose > 1)
-        loss_ = model.getLoss();
-    }
+  }
+  catch (const std::exception &ex) {
+    classExceptionPtr = std::current_exception();
   }
   if (threadId == 0)
     loss_ = model.getLoss();
@@ -714,6 +724,7 @@ void FastText::loadVectors(const std::string& filename) {
 void FastText::train(const Args& args) {
   args_ = std::make_shared<Args>(args);
   dict_ = std::make_shared<Dictionary>(args_);
+  classExceptionPtr = nullptr;
   if (args_->input == "-") {
     // manage expectations
     throw std::invalid_argument("Cannot use stdin for training!");
@@ -760,6 +771,9 @@ void FastText::startThreads() {
   const int64_t ntokens = dict_->ntokens();
   // Same condition as trainThread
   while (tokenCount_ < args_->epoch * ntokens) {
+    if (classExceptionPtr) {
+      break;
+    }
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     if (loss_ >= 0 && args_->verbose > 1) {
       real progress = real(tokenCount_) / (args_->epoch * ntokens);
@@ -774,6 +788,9 @@ void FastText::startThreads() {
     std::cerr << "\r";
     printInfo(1.0, loss_, std::cerr);
     std::cerr << std::endl;
+  }
+  if (classExceptionPtr) {
+    std::rethrow_exception(classExceptionPtr);
   }
 }
 
